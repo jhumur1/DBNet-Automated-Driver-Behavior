@@ -1,0 +1,51 @@
+# YOLO12n-hybrid for behavior detection (channel-safe)
+# Mix of Conv + GhostConv + DWConv, with corrected multiples of 32
+
+# Parameters
+nc: 80 # number of classes
+scales: # model compound scaling constants, i.e. 'model=yolo12n.yaml' will call yolo12.yaml with scale 'n'
+  # [depth, width, max_channels]
+  n: [0.50, 0.25, 512] # summary: 272 layers, 2,602,288 parameters, 2,602,272 gradients, 6.7 GFLOPs
+  s: [0.50, 0.50, 1024] # summary: 272 layers, 9,284,096 parameters, 9,284,080 gradients, 21.7 GFLOPs
+  m: [0.50, 1.00, 512] # summary: 292 layers, 20,199,168 parameters, 20,199,152 gradients, 68.1 GFLOPs
+  l: [1.00, 1.00, 512] # summary: 488 layers, 26,450,784 parameters, 26,450,768 gradients, 89.7 GFLOPs
+  x: [1.00, 1.50, 512] # summary: 488 layers, 59,210,784 parameters, 59,210,768 gradients, 200.3 GFLOPs
+
+
+# Backbone (Strong Feature Extractor)
+# We keep the C2f backbone because high-quality features are essential.
+# The neck will handle the efficiency improvements.
+backbone:
+  - [-1, 1, Conv, [64, 3, 2]]           # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]          # 1-P2/4
+  - [-1, 2, C2f, [128, True]]           # 2
+  - [-1, 1, GhostConv, [256, 3, 2]]          # 3-P3/8
+  - [-1, 4, C2f, [256, True]]           # 4
+  - [-1, 1, Conv, [512, 3, 2]]          # 5-P4/16
+  - [-1, 4, C2f, [512, True]]           # 6
+  - [-1, 1, Conv, [1024, 3, 2]]         # 7-P5/32
+  - [-1, 2, C2f, [1024, True]]          # 8
+  - [-1, 1, SPPF, [1024, 5]]            # 9
+
+# Head (Super-Lightweight Neck for Feature Fusion)
+head:
+  # --- Top-down path ---
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]
+  - [[-1, 6], 1, Concat, [1]]             # Concat backbone P4
+  - [-1, 2, GhostConv, [512, 3, 1]]       # 12 <-- WISE: Use GhostConv here for efficient fusion
+
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]
+  - [[-1, 4], 1, Concat, [1]]             # Concat backbone P3
+  - [-1, 2, GhostConv, [256, 3, 1]]       # 15 <-- WISE: GhostConv is great for smaller feature maps too
+
+  # --- Bottom-up path ---
+  - [-1, 1, DWConv, [256, 3, 2]]          # 16 <-- WISE: Use DWConv for lightweight downsampling
+  - [[-1, 12], 1, Concat, [1]]            # Concat head P4
+  - [-1, 2, GhostConv, [512, 3, 1]]       # 18 <-- WISE: Again, GhostConv for efficient fusion
+
+  - [-1, 1, DWConv, [512, 3, 2]]          # 19 <-- WISE: DWConv is much cheaper than a standard Conv
+  - [[-1, 9], 1, Concat, [1]]             # Concat head P5
+  - [-1, 2, GhostConv, [1024, 3, 1]]      # 21 <-- WISE: Final fusion with the most efficient conv block
+
+  # --- Detection Head ---
+  - [[15, 18, 21], 1, Detect, [nc]]       # Detect(P3, P4, P5)
